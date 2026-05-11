@@ -256,53 +256,16 @@ function openOAuthPopup(url, platform) {
     return;
   }
 
-  // Popup URL ko poll karo — jab redirect ho aur token mile toh capture karo
+  // Popup close hone ka wait karo
   const checkClosed = setInterval(() => {
-    try {
-      // Popup agar same origin pe aa gaya toh URL read kar sakte hain
-      if (popup.location && popup.location.href.includes(CONFIG.youtube.redirectUri.split('/')[2])) {
-        const popupHash = new URLSearchParams(popup.location.hash.substring(1));
-        const popupSearch = new URLSearchParams(popup.location.search);
-
-        const accessToken = popupHash.get('access_token');
-        const code = popupSearch.get('code');
-        const state = popupHash.get('state') || popupSearch.get('state');
-
-        if (accessToken && platform === 'YouTube') {
-          clearInterval(checkClosed);
-          popup.close();
-
-          const tokenData = {
-            accessToken,
-            expiresAt: Date.now() + (3600 * 1000),
-          };
-          Tokens.save('youtube', tokenData);
-          fetchUserProfile('YouTube', accessToken);
-          return;
-        }
-
-        if (code && state && platform !== 'YouTube') {
-          clearInterval(checkClosed);
-          popup.close();
-          showToast(`🔄 ${platform} connecting...`, 'success');
-          exchangeCodeForToken(state, code);
-          return;
-        }
-      }
-    } catch (e) {
-      // Cross-origin error — popup abhi Google pe hai, ignore karo
-    }
-
     if (popup.closed) {
       clearInterval(checkClosed);
-      // Popup band ho gaya — check karo token save hua kya
+      // Check karo token aa gaya kya
       const key = platform.toLowerCase().replace(/[\/ ]/g, '');
       const token = Tokens.get(key) || Tokens.get('youtube');
       if (token) {
         showToast(`✅ ${platform} connected!`, 'success');
         renderAccounts();
-      } else {
-        showToast(`⚠️ ${platform} connection cancelled`, 'error');
       }
     }
   }, 500);
