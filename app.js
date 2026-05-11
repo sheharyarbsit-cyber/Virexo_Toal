@@ -465,25 +465,16 @@ if (!igId) {
     }
 
     if (platform === 'YouTube') {
-      // YouTube channel info — Authorization header use karo
       const res = await fetch(
-        `https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true`,
-        { headers: { 'Authorization': `Bearer ${accessToken}` } }
+        `https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true&access_token=${accessToken}`
       );
       const data = await res.json();
-      console.log('YT Profile data:', data);
       if (data.items && data.items.length > 0) {
         name = data.items[0].snippet.title || 'My Channel';
-        handle = name;
+        handle = `@${name.toLowerCase().replace(/\s/g, '_')}`;
       } else {
-        // Fallback — Google userinfo se naam lo
-        const userRes = await fetch(
-          'https://www.googleapis.com/oauth2/v3/userinfo',
-          { headers: { 'Authorization': `Bearer ${accessToken}` } }
-        );
-        const user = await userRes.json();
-        name = user.name || user.email || 'YouTube Account';
-        handle = name;
+        name = 'YouTube Channel';
+        handle = '@youtube_channel';
       }
     }
 
@@ -710,31 +701,11 @@ async function publishToYouTube(title, videoUrl) {
   const token = Tokens.get('youtube');
   if (!token) throw new Error('YouTube not connected');
 
-  if (Tokens.isExpired('youtube')) {
-    throw new Error('YouTube token expired — please reconnect your account');
-  }
+  // YouTube ke liye video file chahiye — URL se direct nahi hota
+  // Pehle video fetch karo phir upload
+  const videoBlob = await fetch(videoUrl).then(r => r.blob());
 
-  // Step 1: Video metadata insert (multipart upload)
-  // Browser se seedha blob fetch CORS block karta hai
-  // Hum YouTube insertWithUrl workaround use karte hain — metadata only upload
-  // Phir description mein video URL mention karte hain
-  // NOTE: YouTube ka proper video upload server-side chahiye
-  // Filhal caption + URL insert as a community post / description
-
-  // Resumable upload — pehle metadata bhejo
-  const metadata = {
-    snippet: {
-      title: title.substring(0, 100),
-      description: `${title}
-
-Video: ${videoUrl}`,
-      categoryId: '22',
-      tags: ['viral', 'trending'],
-    },
-    status: { privacyStatus: 'public' },
-  };
-
-  // Step 1: Resumable upload session start karo
+  // Resumable upload init
   const initRes = await fetch(
     'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
     {
@@ -742,45 +713,26 @@ Video: ${videoUrl}`,
       headers: {
         'Authorization': `Bearer ${token.accessToken}`,
         'Content-Type': 'application/json',
-        'X-Upload-Content-Type': 'video/mp4',
+        'X-Upload-Content-Type': videoBlob.type,
+        'X-Upload-Content-Length': videoBlob.size,
       },
-      body: JSON.stringify(metadata),
+      body: JSON.stringify({
+        snippet: { title, description: title, categoryId: '22' },
+        status: { privacyStatus: 'public' },
+      }),
     }
   );
 
-  if (!initRes.ok) {
-    const err = await initRes.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `YouTube init failed: ${initRes.status}`);
-  }
-
   const uploadUrl = initRes.headers.get('Location');
-  if (!uploadUrl) throw new Error('YouTube upload URL nahi mila');
+  if (!uploadUrl) throw new Error('YouTube upload init failed');
 
-  // Step 2: Video fetch karo aur upload karo
-  let videoBlob;
-  try {
-    const videoRes = await fetch(videoUrl, { mode: 'cors' });
-    if (!videoRes.ok) throw new Error('Video fetch failed');
-    videoBlob = await videoRes.blob();
-  } catch (e) {
-    throw new Error('Video download failed — URL publicly accessible hona chahiye aur CORS allow hona chahiye');
-  }
-
-  // Step 3: Upload karo
+  // Video upload
   const uploadRes = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: {
-      'Authorization': `Bearer ${token.accessToken}`,
-      'Content-Type': videoBlob.type || 'video/mp4',
-      'Content-Length': videoBlob.size,
-    },
+    headers: { 'Authorization': `Bearer ${token.accessToken}` },
     body: videoBlob,
   });
-
-  const result = await uploadRes.json().catch(() => ({}));
-  if (result.error) throw new Error(result.error.message);
-  if (!result.id) throw new Error('YouTube upload failed — no video ID returned');
-  return result;
+  return uploadRes.json();
 }
 
 // ============================
@@ -1214,3 +1166,258 @@ function showToast(msg, type = 'success') {
   toast.className = `toast ${type} show`;
   setTimeout(() => { toast.classList.remove('show'); }, 3000);
 }
+
+
+
+// ============================
+// VIREXO — DASHBOARD & ANALYTICS
+// ============================
+
+// ---- PAGE SWITCHING ----
+function showPage(page, clickedTab) {
+  ['home', 'dashboard', 'analytics'].forEach(p => {
+    const el = document.getElementById('page-' + p);
+    if (el) el.style.display = (p === page) ? 'block' : 'none';
+  });
+
+  // Update nav tabs
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  if (clickedTab) clickedTab.classList.add('active');
+
+  if (page === 'dashboard') renderDashboard();
+  if (page === 'analytics') renderAnalytics();
+
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ---- DASHBOARD RENDER ----
+function renderDashboard() {
+  const history = getPostHistory();
+  const accounts = state.accounts;
+
+  // Stats
+  const totalReach = history.reduce((s, p) => s + p.reach, 0);
+  const scores = history.map(p => parseInt(p.viralScore) || 0).filter(Boolean);
+  const avgScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) + '%' : '—';
+
+  animateCount('dash-total-posts', history.length);
+  animateCount('dash-total-reach', totalReach, true);
+  document.getElementById('dash-accounts').textContent = accounts.length;
+  document.getElementById('dash-viral-score').textContent = avgScore;
+
+  // Recent Posts
+  const list = document.getElementById('dash-posts-list');
+  if (history.length === 0) {
+    list.innerHTML = `<div class="dash-empty"><span>🚀</span>No posts yet. Go post something viral!</div>`;
+  } else {
+    list.innerHTML = history.slice(0, 6).map(p => `
+      <div class="dash-post-item">
+        <div class="dpi-icon">🎬</div>
+        <div class="dpi-info">
+          <div class="dpi-title">${p.urlShort}</div>
+          <div class="dpi-meta">${p.date} · ${p.tone} tone</div>
+        </div>
+        <div class="dpi-badges">
+          ${p.platforms.map(pl => `<span class="dpi-badge">${PLATFORMS.find(x => x.id === pl)?.icon || ''} ${pl}</span>`).join('')}
+        </div>
+        <div class="dpi-reach">
+          <div class="dpi-reach-num">${formatNumber(p.reach)}</div>
+          <div class="dpi-reach-label">reach</div>
+        </div>
+      </div>`).join('');
+  }
+
+  // Accounts list
+  const accList = document.getElementById('dash-accounts-list');
+  if (accounts.length === 0) {
+    accList.innerHTML = `<div style="color:var(--text3);font-size:0.85rem;padding:10px 0;">No accounts connected yet.</div>`;
+  } else {
+    accList.innerHTML = accounts.map(acc => `
+      <div class="da-item">
+        <div class="da-avatar" style="background:${acc.color}22;color:${acc.color};border:1px solid ${acc.color}44">${acc.initials}</div>
+        <div class="da-info">
+          <div class="da-name">${acc.name}</div>
+          <div class="da-platform">${acc.platform}</div>
+        </div>
+        <div class="da-status">● Connected</div>
+      </div>`).join('');
+  }
+
+  // Platform breakdown
+  const platformCounts = {};
+  history.forEach(p => p.platforms.forEach(pl => { platformCounts[pl] = (platformCounts[pl] || 0) + 1; }));
+  const maxCount = Math.max(...Object.values(platformCounts), 1);
+  const breakdownEl = document.getElementById('dash-platform-breakdown');
+  const platformColors = { youtube: '#ff0000', tiktok: '#69c9d0', instagram: '#e1306c', facebook: '#1877f2', twitter: '#1da1f2', linkedin: '#0077b5' };
+
+  if (Object.keys(platformCounts).length === 0) {
+    breakdownEl.innerHTML = `<div style="color:var(--text3);font-size:0.85rem;padding:10px 0;">Post something to see breakdown.</div>`;
+  } else {
+    breakdownEl.innerHTML = PLATFORMS.map(pl => {
+      const cnt = platformCounts[pl.id] || 0;
+      const pct = Math.round((cnt / maxCount) * 100);
+      return `
+        <div class="dpb-item">
+          <div class="dpb-row">
+            <span class="dpb-name">${pl.icon} ${pl.name}</span>
+            <span class="dpb-count">${cnt} post${cnt !== 1 ? 's' : ''}</span>
+          </div>
+          <div class="dpb-bar-wrap">
+            <div class="dpb-bar" style="width:${pct}%;background:${platformColors[pl.id] || 'var(--accent)'}"></div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+}
+
+// ---- ANALYTICS RENDER ----
+function renderAnalytics() {
+  const history = getPostHistory();
+
+  // Compute top metrics (demo multipliers for engagement/shares)
+  const totalReach = history.reduce((s, p) => s + p.reach, 0);
+  const impressions = Math.round(totalReach * 1.4);
+  const engagements = Math.round(totalReach * 0.07);
+  const shares = Math.round(totalReach * 0.018);
+  const ctr = history.length ? (3.2 + Math.random()).toFixed(1) + '%' : '0%';
+
+  animateCount('an-impressions', impressions, true);
+  animateCount('an-engagements', engagements, true);
+  animateCount('an-shares', shares, true);
+  document.getElementById('an-ctr').textContent = ctr;
+
+  // Platform bars
+  const platformReach = { youtube: 12000, tiktok: 45000, instagram: 18000, facebook: 9000, twitter: 7000, linkedin: 4000 };
+  const platformColors = { youtube: '#ff0000', tiktok: '#69c9d0', instagram: '#e1306c', facebook: '#1877f2', twitter: '#1da1f2', linkedin: '#0077b5' };
+  const platformCounts = {};
+  history.forEach(p => p.platforms.forEach(pl => { platformCounts[pl] = (platformCounts[pl] || 0) + 1; }));
+
+  const computedReach = {};
+  PLATFORMS.forEach(pl => {
+    computedReach[pl.id] = (platformCounts[pl.id] || 0) * (platformReach[pl.id] || 5000);
+  });
+  const maxReach = Math.max(...Object.values(computedReach), 1);
+
+  document.getElementById('an-bars').innerHTML = PLATFORMS.map(pl => `
+    <div class="an-bar-item">
+      <div class="an-bar-label">${pl.icon} ${pl.name}</div>
+      <div class="an-bar-wrap">
+        <div class="an-bar-fill" id="anbar-${pl.id}" style="width:0%;background:${platformColors[pl.id] || 'var(--accent)'}"></div>
+      </div>
+      <div class="an-bar-value">${formatNumber(computedReach[pl.id])}</div>
+    </div>`).join('');
+
+  setTimeout(() => {
+    PLATFORMS.forEach(pl => {
+      const el = document.getElementById('anbar-' + pl.id);
+      if (el) el.style.width = Math.round((computedReach[pl.id] / maxReach) * 100) + '%';
+    });
+  }, 80);
+
+  // Heatmap
+  const days = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const times = ['6 AM', '9 AM', '12 PM', '3 PM', '6 PM', '9 PM'];
+  const hotData = [
+    [0,1,1,0,0,1,0], [1,2,2,1,1,3,2], [2,3,4,3,2,4,3],
+    [1,2,3,2,1,3,2], [2,3,4,3,3,4,3], [1,2,3,2,1,2,1]
+  ];
+  const heatmapEl = document.getElementById('heatmap');
+  heatmapEl.innerHTML = `
+    <div class="heatmap-days">${days.map(d => `<div class="heatmap-day-label">${d}</div>`).join('')}</div>
+    ${times.map((t, ti) => `
+      <div class="heatmap-row">
+        <div class="heatmap-time-label">${t}</div>
+        ${days.map((_, di) => `<div class="heatmap-cell hm-${hotData[ti][di]}" title="${t} ${days[di]}: ${['Low','Moderate','Good','Great','🔥 Peak'][hotData[ti][di]]}"></div>`).join('')}
+      </div>`).join('')}`;
+
+  // Tone performance
+  const toneData = [
+    { icon: '🔥', name: 'Viral', score: 94, color: '#a855f7' },
+    { icon: '⚡', name: 'Clickbait', score: 88, color: '#ffd700' },
+    { icon: '😂', name: 'Funny', score: 76, color: '#00d4ff' },
+    { icon: '🎯', name: 'Serious', score: 61, color: '#00ff88' },
+  ];
+  document.getElementById('tone-performance').innerHTML = toneData.map(t => `
+    <div class="tp-item">
+      <div class="tp-icon">${t.icon}</div>
+      <div class="tp-info">
+        <div class="tp-name">${t.name}</div>
+        <div class="tp-bar-wrap"><div class="tp-bar" style="width:${t.score}%;background:${t.color}"></div></div>
+      </div>
+      <div class="tp-score">${t.score}%</div>
+    </div>`).join('');
+
+  // Post history table
+  const tbody = document.getElementById('an-table-body');
+  if (history.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="at-empty">No post history yet. Start posting to see analytics!</td></tr>`;
+  } else {
+    tbody.innerHTML = history.map(p => {
+      const scoreNum = parseInt(p.viralScore) || 0;
+      const scoreClass = scoreNum >= 85 ? 'high' : 'mid';
+      return `
+        <tr>
+          <td class="at-video">${p.urlShort}<small>${p.tone} tone</small></td>
+          <td class="at-platforms">${p.platforms.map(pl => `<span class="at-plat">${PLATFORMS.find(x => x.id === pl)?.icon || '📱'}</span>`).join('')}</td>
+          <td><span class="at-tone">${p.tone}</span></td>
+          <td class="at-reach">${formatNumber(p.reach)}</td>
+          <td><span class="at-score ${scoreClass}">${p.viralScore}</span></td>
+          <td class="at-date">${p.date}</td>
+        </tr>`;
+    }).join('');
+  }
+}
+
+// ---- POST HISTORY (localStorage) ----
+function getPostHistory() {
+  try {
+    return JSON.parse(localStorage.getItem('virexo_post_history') || '[]');
+  } catch { return []; }
+}
+
+function savePostToHistory(platforms, reach, viralScore) {
+  const history = getPostHistory();
+  const url = state.videoUrl || 'https://example.com/video';
+  const urlShort = url.length > 36 ? url.substring(0, 33) + '...' : url;
+  const now = new Date();
+  const date = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  history.unshift({
+    urlShort,
+    tone: state.selectedTone,
+    platforms: [...platforms],
+    reach,
+    viralScore,
+    date
+  });
+
+  localStorage.setItem('virexo_post_history', JSON.stringify(history.slice(0, 50)));
+}
+
+// ---- ANIMATED COUNTER ----
+function animateCount(id, target, format) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const duration = 800;
+  const start = performance.now();
+  const from = 0;
+  function update(now) {
+    const elapsed = Math.min((now - start) / duration, 1);
+    const ease = 1 - Math.pow(1 - elapsed, 3);
+    const val = Math.round(from + (target - from) * ease);
+    el.textContent = format ? formatNumber(val) : val;
+    if (elapsed < 1) requestAnimationFrame(update);
+    else el.textContent = format ? formatNumber(target) : target;
+  }
+  requestAnimationFrame(update);
+}
+
+// ---- PATCH showSuccess to save history ----
+const _origShowSuccess = showSuccess;
+window.showSuccess = function(accounts) {
+  const platforms = [...state.selectedPlatforms];
+  const reach = estimateReach(platforms);
+  const viralScore = getViralScore();
+  savePostToHistory(platforms, reach, viralScore);
+  _origShowSuccess(accounts);
+};
