@@ -11,8 +11,8 @@ const CONFIG = {
     scope: 'pages_manage_posts,pages_read_engagement,instagram_content_publish,instagram_basic,public_profile',
   },
   youtube: {
-    clientId: 'YOUR_GOOGLE_CLIENT_ID',
-    redirectUri: 'https://yoursite.com/oauth/youtube',
+    clientId: '490840543938-l0275mn9vam9mu629cbul1qqd1fggomk.apps.googleusercontent.com',
+    redirectUri: 'https://virexo-toal.vercel.app/',
     scope: 'https://www.googleapis.com/auth/youtube.upload',
   },
   tiktok: {
