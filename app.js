@@ -133,11 +133,30 @@ function saveAccounts() {
 }
 
 // ---- OAUTH — URL CALLBACK CHECK ----
-// Jab user OAuth se wapas aaye, URL mein ?code= hoga
 function checkOAuthCallback() {
+  // YouTube implicit flow — token URL hash mein aata hai (#access_token=...)
+  const hash = new URLSearchParams(window.location.hash.substring(1));
+  const hashToken = hash.get('access_token');
+  const hashState = hash.get('state');
+
+  if (hashToken && hashState === 'YouTube') {
+    // URL clean karo
+    window.history.replaceState({}, document.title, window.location.pathname);
+    showToast('🔄 YouTube connecting...', 'success');
+
+    const tokenData = {
+      accessToken: hashToken,
+      expiresAt: Date.now() + (3600 * 1000), // 1 hour
+    };
+    Tokens.save('youtube', tokenData);
+    fetchUserProfile('YouTube', hashToken);
+    return;
+  }
+
+  // Facebook/Instagram/others — code query param mein aata hai (?code=...)
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
-  const platform = params.get('state'); // state param mein platform name bheja tha
+  const platform = params.get('state');
 
   if (!code || !platform) return;
 
@@ -145,8 +164,6 @@ function checkOAuthCallback() {
   window.history.replaceState({}, document.title, window.location.pathname);
 
   showToast(`🔄 ${platform} connecting...`, 'success');
-
-  // Platform ke hisaab se token exchange karo
   exchangeCodeForToken(platform, code);
 }
 
@@ -167,14 +184,13 @@ function connectMeta(type) {
   openOAuthPopup(url, platform);
 }
 
-// YouTube — Google OAuth
+// YouTube — Google OAuth (implicit token flow — frontend ke liye)
 function connectYouTube() {
   const url = `https://accounts.google.com/o/oauth2/v2/auth?`
     + `client_id=${CONFIG.youtube.clientId}`
     + `&redirect_uri=${encodeURIComponent(CONFIG.youtube.redirectUri)}`
     + `&scope=${encodeURIComponent(CONFIG.youtube.scope)}`
-    + `&response_type=code`
-    + `&access_type=offline`
+    + `&response_type=token`   // token flow — code nahi, seedha access_token milega
     + `&state=YouTube`;
 
   openOAuthPopup(url, 'YouTube');
@@ -240,15 +256,53 @@ function openOAuthPopup(url, platform) {
     return;
   }
 
-  // Popup close hone ka wait karo
+  // Popup URL ko poll karo — jab redirect ho aur token mile toh capture karo
   const checkClosed = setInterval(() => {
+    try {
+      // Popup agar same origin pe aa gaya toh URL read kar sakte hain
+      if (popup.location && popup.location.href.includes(CONFIG.youtube.redirectUri.split('/')[2])) {
+        const popupHash = new URLSearchParams(popup.location.hash.substring(1));
+        const popupSearch = new URLSearchParams(popup.location.search);
+
+        const accessToken = popupHash.get('access_token');
+        const code = popupSearch.get('code');
+        const state = popupHash.get('state') || popupSearch.get('state');
+
+        if (accessToken && platform === 'YouTube') {
+          clearInterval(checkClosed);
+          popup.close();
+
+          const tokenData = {
+            accessToken,
+            expiresAt: Date.now() + (3600 * 1000),
+          };
+          Tokens.save('youtube', tokenData);
+          fetchUserProfile('YouTube', accessToken);
+          return;
+        }
+
+        if (code && state && platform !== 'YouTube') {
+          clearInterval(checkClosed);
+          popup.close();
+          showToast(`🔄 ${platform} connecting...`, 'success');
+          exchangeCodeForToken(state, code);
+          return;
+        }
+      }
+    } catch (e) {
+      // Cross-origin error — popup abhi Google pe hai, ignore karo
+    }
+
     if (popup.closed) {
       clearInterval(checkClosed);
-      // Check karo token aa gaya kya
-      const token = Tokens.get(platform.toLowerCase().replace('/', ''));
+      // Popup band ho gaya — check karo token save hua kya
+      const key = platform.toLowerCase().replace(/[\/ ]/g, '');
+      const token = Tokens.get(key) || Tokens.get('youtube');
       if (token) {
         showToast(`✅ ${platform} connected!`, 'success');
         renderAccounts();
+      } else {
+        showToast(`⚠️ ${platform} connection cancelled`, 'error');
       }
     }
   }, 500);
@@ -281,6 +335,22 @@ async function exchangeCodeForToken(platform, code) {
         // Long-lived token ke liye exchange karo
         await exchangeForLongLivedToken(data.access_token, platform);
         return;
+      }
+    }
+
+    if (platform === 'YouTube') {
+      // YouTube token exchange — server-side proxy se karo CORS ki wajah se
+      // Yahan hum token ko directly handle karte hain
+      // Note: Google OAuth code exchange requires client_secret — backend pe karna chahiye
+      // Filhal token directly URL hash se lete hain agar implicit flow use ho
+      // Lekin humne code flow use kiya hai, toh workaround: token sessionStorage mein store karo
+      const storedToken = sessionStorage.getItem('youtube_access_token');
+      if (storedToken) {
+        tokenData = {
+          accessToken: storedToken,
+          expiresAt: Date.now() + (3600 * 1000), // 1 hour
+        };
+        sessionStorage.removeItem('youtube_access_token');
       }
     }
 
@@ -391,6 +461,20 @@ if (!igId) {
           });
           handle = pages.data[0].name;
         }
+      }
+    }
+
+    if (platform === 'YouTube') {
+      const res = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true&access_token=${accessToken}`
+      );
+      const data = await res.json();
+      if (data.items && data.items.length > 0) {
+        name = data.items[0].snippet.title || 'My Channel';
+        handle = `@${name.toLowerCase().replace(/\s/g, '_')}`;
+      } else {
+        name = 'YouTube Channel';
+        handle = '@youtube_channel';
       }
     }
 
@@ -613,77 +697,6 @@ async function waitForInstagramContainer(containerId, accessToken, maxAttempts =
   throw new Error('Instagram video processing timeout — try again');
 }
 
-async function waitForInstagramContainer(containerId, accessToken, maxAttempts = 20) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(r => setTimeout(r, 5000)); // 5 sec wait
-
-    const res = await fetch(
-      `https://graph.facebook.com/v19.0/${containerId}?fields=status_code,status&access_token=${accessToken}`
-    );
-    const data = await res.json();
-    console.log(`IG Status check ${i + 1}:`, data);
-
-    if (data.status_code === 'FINISHED') return containerId;
-
-    if (data.status_code === 'ERROR' || data.status_code === 'EXPIRED') {
-      throw new Error(`Instagram processing failed: ${data.status_code}`);
-    }
-    // IN_PROGRESS hoga toh loop continue hoga
-  }
-  throw new Error('Instagram timeout — video too large or slow connection');
-}
-
-async function publishToInstagram(caption, videoUrl) {
-  const igData = Tokens.get('instagram');
-
-  if (!igData || !igData.igUserId) {
-    throw new Error("Instagram not connected properly");
-  }
-
-  // STEP 1: Container banao
-  const containerRes = await fetch(
-    `https://graph.facebook.com/v19.0/${igData.igUserId}/media`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        media_type: 'REELS',
-        video_url: videoUrl,
-        caption,
-        access_token: igData.accessToken,
-      }),
-    }
-  );
-
-  const container = await containerRes.json();
-  console.log("IG CONTAINER:", container);
-
-  if (!container.id) {
-    throw new Error(container.error?.message || "Container create failed");
-  }
-
-  // STEP 2: FINISHED hone tak wait karo (polling)
-  await waitForInstagramContainer(container.id, igData.accessToken);
-
-  // STEP 3: Publish karo
-  const publishRes = await fetch(
-    `https://graph.facebook.com/v19.0/${igData.igUserId}/media_publish`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        creation_id: container.id,
-        access_token: igData.accessToken,
-      }),
-    }
-  );
-
-  const result = await publishRes.json();
-  console.log("IG PUBLISH:", result);
-
-  if (result.error) throw new Error(result.error.message);
-  return result;
-}
 async function publishToYouTube(title, videoUrl) {
   const token = Tokens.get('youtube');
   if (!token) throw new Error('YouTube not connected');
