@@ -7,7 +7,7 @@
 const CONFIG = {
   meta: {
     appId: '1582044639536096',                        // Meta Developer App ID
-    redirectUri: 'https://virexo.vercel.app/oauth/meta',   // Aapka redirect URL
+    redirectUri: 'https://virexo-toal.vercel.app/',   // Aapka redirect URL
     scope: 'pages_manage_posts,pages_read_engagement,instagram_content_publish,instagram_basic,public_profile',
   },
   youtube: {
