@@ -505,7 +505,7 @@ async function publishToRealAccounts(caption, videoUrl) {
 }
 
 async function publishToFacebook(caption, videoUrl) {
-  const pageData = Tokens.get('1132112566646338');
+  const pageData = Tokens.get('facebook_page');
   if (!pageData) throw new Error('Facebook page not connected');
 
   const res = await fetch(
@@ -526,7 +526,7 @@ async function publishToFacebook(caption, videoUrl) {
 }
 
 async function publishToInstagram(caption, videoUrl) {
-  const igData = Tokens.get('');
+  const igData = Tokens.get('instagram_page_id');
   const token = Tokens.get('EAAWe3HjCIZBABRc3wkYkG9fKHKJR00Ypx0seY8UIlQci9xswshFW6rjOCIXiaofBF9ZCXeZCVSYPjNP1JoHc71jmk3YYZBKwKv1DJ9Y1YucSWSA6wZCE5t4iU8NsLKcnuGIlAiotmDlI5Gwuoob9gNslcwi36PrXdTCowYdevOt1YVJZBdSuZAQmEyZBZAHwfADs8QVZAEZCg7De82y');
   if (!igData || !token) throw new Error('Instagram not connected');
 
