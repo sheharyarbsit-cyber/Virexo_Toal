@@ -364,7 +364,7 @@ async function fetchUserProfile(platform, accessToken) {
             ).then(r => r.json());
             handle = `@${igProfile.username || 'ig_account'}`;
             // IG account token bhi save karo
-            TTokens.save('instagram_page_id', {
+            Tokens.save('instagram_page_id', {
   pageId: igId,
   pageToken
 });
