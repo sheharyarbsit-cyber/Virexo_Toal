@@ -358,15 +358,19 @@ async function fetchUserProfile(platform, accessToken) {
           );
           const igData = await igRes.json();
           if (igData.instagram_business_account) {
-            const igId = igData.instagram_business_account.id;
+            const igId = igData?.instagram_business_account?.id;
+
+if (!igId) {
+  showToast("❌ Instagram not properly linked with Facebook Page", "error");
+  return;
+}
             const igProfile = await fetch(
               `https://graph.facebook.com/v19.0/${igId}?fields=username&access_token=${pageToken}`
             ).then(r => r.json());
             handle = `@${igProfile.username || 'ig_account'}`;
             // IG account token bhi save karo
-          Tokens.save('instagram', {
+       Tokens.save('instagram', {
   igUserId: igId,
-  pageId: pageId,
   accessToken: pageToken
 });
           }
@@ -533,10 +537,10 @@ async function publishToInstagram(caption, videoUrl) {
   const igData = Tokens.get('instagram');
 
   if (!igData || !igData.igUserId) {
-    throw new Error('Instagram not properly connected (missing IG ID)');
+    throw new Error("Instagram not connected properly");
   }
 
-  // STEP 1: Create media container
+  // STEP 1: Create container
   const containerRes = await fetch(
     `https://graph.facebook.com/v19.0/${igData.igUserId}/media`,
     {
@@ -545,22 +549,24 @@ async function publishToInstagram(caption, videoUrl) {
       body: JSON.stringify({
         media_type: 'REELS',
         video_url: videoUrl,
-        caption: caption,
+        caption,
         access_token: igData.accessToken,
       }),
     }
   );
 
   const container = await containerRes.json();
-  console.log("IG container:", container);
+
+  console.log("IG CONTAINER:", container);
 
   if (!container.id) {
-    throw new Error(container.error?.message || 'Instagram container failed');
+    throw new Error(container.error?.message || "Media container failed");
   }
 
-  // STEP 2: Publish
+  // STEP 2: wait
   await new Promise(r => setTimeout(r, 3000));
 
+  // STEP 3: publish
   const publishRes = await fetch(
     `https://graph.facebook.com/v19.0/${igData.igUserId}/media_publish`,
     {
@@ -573,14 +579,15 @@ async function publishToInstagram(caption, videoUrl) {
     }
   );
 
-  const published = await publishRes.json();
-  console.log("IG publish:", published);
+  const result = await publishRes.json();
 
-  if (published.error) {
-    throw new Error(published.error.message);
+  console.log("IG PUBLISH:", result);
+
+  if (result.error) {
+    throw new Error(result.error.message);
   }
 
-  return published;
+  return result;
 }
 async function publishToYouTube(title, videoUrl) {
   const token = Tokens.get('youtube');
