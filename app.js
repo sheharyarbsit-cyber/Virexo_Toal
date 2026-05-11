@@ -351,23 +351,50 @@ async function fetchUserProfile(platform, accessToken) {
         );
         const pages = await pagesRes.json();
         if (pages.data && pages.data.length > 0) {
-          const pageId = pages.data[0].id;
-          const pageToken = pages.data[0].access_token;
-          const igRes = await fetch(
-            `https://graph.facebook.com/v19.0/${pageId}?fields=instagram_business_account&access_token=${pageToken}`
-          );
-          const igData = await igRes.json();
-          if (igData.instagram_business_account) {
-            const igId = igData.instagram_business_account.id;
-            const igProfile = await fetch(
-              `https://graph.facebook.com/v19.0/${igId}?fields=username&access_token=${pageToken}`
-            ).then(r => r.json());
-            handle = `@${igProfile.username || 'ig_account'}`;
-            // IG account token bhi save karo
-            Tokens.save('instagram_page_id', {
-  pageId: igId,
-  pageToken
-});
+         let pageId = null;
+let pageToken = null;
+let igData = null;
+
+// Sab pages check karo
+for (const page of pages.data) {
+
+  const checkRes = await fetch(
+    `https://graph.facebook.com/v19.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`
+  );
+
+  const checkData = await checkRes.json();
+
+  console.log("CHECKING PAGE:", page.name, checkData);
+
+  // Jis page ke sath Instagram linked ho
+  if (checkData.instagram_business_account) {
+    pageId = page.id;
+    pageToken = page.access_token;
+    igData = checkData;
+    break;
+  }
+}
+
+// Agar koi Instagram linked page nahi mila
+if (!pageId || !igData) {
+  throw new Error("No Instagram business account linked");
+}
+
+if (igData.instagram_business_account) {
+
+  const igId = igData.instagram_business_account.id;
+
+  const igProfile = await fetch(
+    `https://graph.facebook.com/v19.0/${igId}?fields=username&access_token=${pageToken}`
+  ).then(r => r.json());
+
+  handle = `@${igProfile.username || 'ig_account'}`;
+
+  Tokens.save('instagram_page_id', {
+    pageId: igId,
+    pageToken
+  });
+
           }
         }
       }
