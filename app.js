@@ -256,16 +256,53 @@ function openOAuthPopup(url, platform) {
     return;
   }
 
-  // Popup close hone ka wait karo
+  // Popup URL ko poll karo — jab redirect ho aur token mile toh capture karo
   const checkClosed = setInterval(() => {
+    try {
+      // Popup agar same origin pe aa gaya toh URL read kar sakte hain
+      if (popup.location && popup.location.href.includes(CONFIG.youtube.redirectUri.split('/')[2])) {
+        const popupHash = new URLSearchParams(popup.location.hash.substring(1));
+        const popupSearch = new URLSearchParams(popup.location.search);
+
+        const accessToken = popupHash.get('access_token');
+        const code = popupSearch.get('code');
+        const state = popupHash.get('state') || popupSearch.get('state');
+
+        if (accessToken && platform === 'YouTube') {
+          clearInterval(checkClosed);
+          popup.close();
+
+          const tokenData = {
+            accessToken,
+            expiresAt: Date.now() + (3600 * 1000),
+          };
+          Tokens.save('youtube', tokenData);
+          fetchUserProfile('YouTube', accessToken);
+          return;
+        }
+
+        if (code && state && platform !== 'YouTube') {
+          clearInterval(checkClosed);
+          popup.close();
+          showToast(`🔄 ${platform} connecting...`, 'success');
+          exchangeCodeForToken(state, code);
+          return;
+        }
+      }
+    } catch (e) {
+      // Cross-origin error — popup abhi Google pe hai, ignore karo
+    }
+
     if (popup.closed) {
       clearInterval(checkClosed);
-      // Check karo token aa gaya kya
+      // Popup band ho gaya — check karo token save hua kya
       const key = platform.toLowerCase().replace(/[\/ ]/g, '');
       const token = Tokens.get(key) || Tokens.get('youtube');
       if (token) {
         showToast(`✅ ${platform} connected!`, 'success');
         renderAccounts();
+      } else {
+        showToast(`⚠️ ${platform} connection cancelled`, 'error');
       }
     }
   }, 500);
@@ -428,16 +465,25 @@ if (!igId) {
     }
 
     if (platform === 'YouTube') {
+      // YouTube channel info — Authorization header use karo
       const res = await fetch(
-        `https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true&access_token=${accessToken}`
+        `https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true`,
+        { headers: { 'Authorization': `Bearer ${accessToken}` } }
       );
       const data = await res.json();
+      console.log('YT Profile data:', data);
       if (data.items && data.items.length > 0) {
         name = data.items[0].snippet.title || 'My Channel';
-        handle = `@${name.toLowerCase().replace(/\s/g, '_')}`;
+        handle = name;
       } else {
-        name = 'YouTube Channel';
-        handle = '@youtube_channel';
+        // Fallback — Google userinfo se naam lo
+        const userRes = await fetch(
+          'https://www.googleapis.com/oauth2/v3/userinfo',
+          { headers: { 'Authorization': `Bearer ${accessToken}` } }
+        );
+        const user = await userRes.json();
+        name = user.name || user.email || 'YouTube Account';
+        handle = name;
       }
     }
 
@@ -664,11 +710,31 @@ async function publishToYouTube(title, videoUrl) {
   const token = Tokens.get('youtube');
   if (!token) throw new Error('YouTube not connected');
 
-  // YouTube ke liye video file chahiye — URL se direct nahi hota
-  // Pehle video fetch karo phir upload
-  const videoBlob = await fetch(videoUrl).then(r => r.blob());
+  if (Tokens.isExpired('youtube')) {
+    throw new Error('YouTube token expired — please reconnect your account');
+  }
 
-  // Resumable upload init
+  // Step 1: Video metadata insert (multipart upload)
+  // Browser se seedha blob fetch CORS block karta hai
+  // Hum YouTube insertWithUrl workaround use karte hain — metadata only upload
+  // Phir description mein video URL mention karte hain
+  // NOTE: YouTube ka proper video upload server-side chahiye
+  // Filhal caption + URL insert as a community post / description
+
+  // Resumable upload — pehle metadata bhejo
+  const metadata = {
+    snippet: {
+      title: title.substring(0, 100),
+      description: `${title}
+
+Video: ${videoUrl}`,
+      categoryId: '22',
+      tags: ['viral', 'trending'],
+    },
+    status: { privacyStatus: 'public' },
+  };
+
+  // Step 1: Resumable upload session start karo
   const initRes = await fetch(
     'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
     {
@@ -676,26 +742,45 @@ async function publishToYouTube(title, videoUrl) {
       headers: {
         'Authorization': `Bearer ${token.accessToken}`,
         'Content-Type': 'application/json',
-        'X-Upload-Content-Type': videoBlob.type,
-        'X-Upload-Content-Length': videoBlob.size,
+        'X-Upload-Content-Type': 'video/mp4',
       },
-      body: JSON.stringify({
-        snippet: { title, description: title, categoryId: '22' },
-        status: { privacyStatus: 'public' },
-      }),
+      body: JSON.stringify(metadata),
     }
   );
 
-  const uploadUrl = initRes.headers.get('Location');
-  if (!uploadUrl) throw new Error('YouTube upload init failed');
+  if (!initRes.ok) {
+    const err = await initRes.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `YouTube init failed: ${initRes.status}`);
+  }
 
-  // Video upload
+  const uploadUrl = initRes.headers.get('Location');
+  if (!uploadUrl) throw new Error('YouTube upload URL nahi mila');
+
+  // Step 2: Video fetch karo aur upload karo
+  let videoBlob;
+  try {
+    const videoRes = await fetch(videoUrl, { mode: 'cors' });
+    if (!videoRes.ok) throw new Error('Video fetch failed');
+    videoBlob = await videoRes.blob();
+  } catch (e) {
+    throw new Error('Video download failed — URL publicly accessible hona chahiye aur CORS allow hona chahiye');
+  }
+
+  // Step 3: Upload karo
   const uploadRes = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: { 'Authorization': `Bearer ${token.accessToken}` },
+    headers: {
+      'Authorization': `Bearer ${token.accessToken}`,
+      'Content-Type': videoBlob.type || 'video/mp4',
+      'Content-Length': videoBlob.size,
+    },
     body: videoBlob,
   });
-  return uploadRes.json();
+
+  const result = await uploadRes.json().catch(() => ({}));
+  if (result.error) throw new Error(result.error.message);
+  if (!result.id) throw new Error('YouTube upload failed — no video ID returned');
+  return result;
 }
 
 // ============================
