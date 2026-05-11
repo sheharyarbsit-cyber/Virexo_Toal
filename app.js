@@ -532,7 +532,6 @@ async function publishToFacebook(caption, videoUrl) {
   if (data.error) throw new Error(data.error.message);
   return data;
 }
-
 async function publishToInstagram(caption, videoUrl) {
   const igData = Tokens.get('instagram');
 
@@ -556,17 +555,117 @@ async function publishToInstagram(caption, videoUrl) {
   );
 
   const container = await containerRes.json();
-
   console.log("IG CONTAINER:", container);
 
   if (!container.id) {
     throw new Error(container.error?.message || "Media container failed");
   }
 
-  // STEP 2: wait
-  await new Promise(r => setTimeout(r, 3000));
+  // STEP 2: Status poll karo — FINISHED hone tak wait karo
+  const mediaId = await waitForInstagramContainer(container.id, igData.accessToken);
 
-  // STEP 3: publish
+  // STEP 3: Publish
+  const publishRes = await fetch(
+    `https://graph.facebook.com/v19.0/${igData.igUserId}/media_publish`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        creation_id: mediaId,
+        access_token: igData.accessToken,
+      }),
+    }
+  );
+
+  const result = await publishRes.json();
+  console.log("IG PUBLISH:", result);
+
+  if (result.error) {
+    throw new Error(result.error.message);
+  }
+
+  return result;
+}
+
+// ---- NEW: Container status poller ----
+async function waitForInstagramContainer(containerId, accessToken, maxAttempts = 20) {
+  for (let i = 0; i < maxAttempts; i++) {
+    // Har attempt pe 5 seconds wait
+    await new Promise(r => setTimeout(r, 5000));
+
+    const res = await fetch(
+      `https://graph.facebook.com/v19.0/${containerId}?fields=status_code,status&access_token=${accessToken}`
+    );
+    const data = await res.json();
+    console.log(`IG Status check ${i + 1}:`, data);
+
+    if (data.status_code === 'FINISHED') {
+      return containerId; // Ready hai publish ke liye
+    }
+
+    if (data.status_code === 'ERROR' || data.status_code === 'EXPIRED') {
+      throw new Error(`Instagram container failed: ${data.status_code} — ${data.status || ''}`);
+    }
+
+    // IN_PROGRESS ya PUBLISHED — continue polling
+  }
+
+  throw new Error('Instagram video processing timeout — try again');
+}
+
+async function waitForInstagramContainer(containerId, accessToken, maxAttempts = 20) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 5000)); // 5 sec wait
+
+    const res = await fetch(
+      `https://graph.facebook.com/v19.0/${containerId}?fields=status_code,status&access_token=${accessToken}`
+    );
+    const data = await res.json();
+    console.log(`IG Status check ${i + 1}:`, data);
+
+    if (data.status_code === 'FINISHED') return containerId;
+
+    if (data.status_code === 'ERROR' || data.status_code === 'EXPIRED') {
+      throw new Error(`Instagram processing failed: ${data.status_code}`);
+    }
+    // IN_PROGRESS hoga toh loop continue hoga
+  }
+  throw new Error('Instagram timeout — video too large or slow connection');
+}
+
+async function publishToInstagram(caption, videoUrl) {
+  const igData = Tokens.get('instagram');
+
+  if (!igData || !igData.igUserId) {
+    throw new Error("Instagram not connected properly");
+  }
+
+  // STEP 1: Container banao
+  const containerRes = await fetch(
+    `https://graph.facebook.com/v19.0/${igData.igUserId}/media`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        media_type: 'REELS',
+        video_url: videoUrl,
+        caption,
+        access_token: igData.accessToken,
+      }),
+    }
+  );
+
+  const container = await containerRes.json();
+  console.log("IG CONTAINER:", container);
+
+  if (!container.id) {
+    throw new Error(container.error?.message || "Container create failed");
+  }
+
+  // STEP 2: FINISHED hone tak wait karo (polling)
+  await waitForInstagramContainer(container.id, igData.accessToken);
+
+  // STEP 3: Publish karo
   const publishRes = await fetch(
     `https://graph.facebook.com/v19.0/${igData.igUserId}/media_publish`,
     {
@@ -580,13 +679,9 @@ async function publishToInstagram(caption, videoUrl) {
   );
 
   const result = await publishRes.json();
-
   console.log("IG PUBLISH:", result);
 
-  if (result.error) {
-    throw new Error(result.error.message);
-  }
-
+  if (result.error) throw new Error(result.error.message);
   return result;
 }
 async function publishToYouTube(title, videoUrl) {
