@@ -364,9 +364,10 @@ async function fetchUserProfile(platform, accessToken) {
             ).then(r => r.json());
             handle = `@${igProfile.username || 'ig_account'}`;
             // IG account token bhi save karo
-            Tokens.save('instagram_page_id', {
-  pageId: igId,
-  pageToken
+          Tokens.save('instagram', {
+  igUserId: igId,
+  pageId: pageId,
+  accessToken: pageToken
 });
           }
         }
@@ -529,45 +530,58 @@ async function publishToFacebook(caption, videoUrl) {
 }
 
 async function publishToInstagram(caption, videoUrl) {
-  const igData = Tokens.get('instagram_page_id');
-  const token = Tokens.get('instagram');
-  if (!igData || !token) throw new Error('Instagram not connected');
+  const igData = Tokens.get('instagram');
 
-  // Step 1: Media container
+  if (!igData || !igData.igUserId) {
+    throw new Error('Instagram not properly connected (missing IG ID)');
+  }
+
+  // STEP 1: Create media container
   const containerRes = await fetch(
-    `https://graph.facebook.com/v19.0/${igData.pageId}/media`,
+    `https://graph.facebook.com/v19.0/${igData.igUserId}/media`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         media_type: 'REELS',
         video_url: videoUrl,
-        caption,
-        access_token: igData.pageToken,
+        caption: caption,
+        access_token: igData.accessToken,
       }),
     }
   );
-  const container = await containerRes.json();
-  if (container.error) throw new Error(container.error.message);
 
-  // Step 2: Publish
-  await new Promise(r => setTimeout(r, 3000)); // Upload hone do
+  const container = await containerRes.json();
+  console.log("IG container:", container);
+
+  if (!container.id) {
+    throw new Error(container.error?.message || 'Instagram container failed');
+  }
+
+  // STEP 2: Publish
+  await new Promise(r => setTimeout(r, 3000));
+
   const publishRes = await fetch(
-    `https://graph.facebook.com/v19.0/${igData.pageId}/media_publish`,
+    `https://graph.facebook.com/v19.0/${igData.igUserId}/media_publish`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         creation_id: container.id,
-        access_token: igData.pageToken,
+        access_token: igData.accessToken,
       }),
     }
   );
+
   const published = await publishRes.json();
-  if (published.error) throw new Error(published.error.message);
+  console.log("IG publish:", published);
+
+  if (published.error) {
+    throw new Error(published.error.message);
+  }
+
   return published;
 }
-
 async function publishToYouTube(title, videoUrl) {
   const token = Tokens.get('youtube');
   if (!token) throw new Error('YouTube not connected');
