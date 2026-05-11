@@ -364,7 +364,10 @@ async function fetchUserProfile(platform, accessToken) {
             ).then(r => r.json());
             handle = `@${igProfile.username || 'ig_account'}`;
             // IG account token bhi save karo
-            Tokens.save('978553544636302', { pageId: igId, pageToken });
+            TTokens.save('instagram_page_id', {
+  pageId: igId,
+  pageToken
+});
           }
         }
       }
@@ -376,7 +379,7 @@ async function fetchUserProfile(platform, accessToken) {
         );
         const pages = await pagesRes.json();
         if (pages.data && pages.data.length > 0) {
-          Tokens.save('1132112566646338', {
+          Tokens.save('facebook_page', {
             pageId: pages.data[0].id,
             pageToken: pages.data[0].access_token,
             pageName: pages.data[0].name,
@@ -527,7 +530,7 @@ async function publishToFacebook(caption, videoUrl) {
 
 async function publishToInstagram(caption, videoUrl) {
   const igData = Tokens.get('instagram_page_id');
-  const token = Tokens.get('EAAWe3HjCIZBABRc3wkYkG9fKHKJR00Ypx0seY8UIlQci9xswshFW6rjOCIXiaofBF9ZCXeZCVSYPjNP1JoHc71jmk3YYZBKwKv1DJ9Y1YucSWSA6wZCE5t4iU8NsLKcnuGIlAiotmDlI5Gwuoob9gNslcwi36PrXdTCowYdevOt1YVJZBdSuZAQmEyZBZAHwfADs8QVZAEZCg7De82y');
+  const token = Tokens.get('instagram');
   if (!igData || !token) throw new Error('Instagram not connected');
 
   // Step 1: Media container
@@ -912,7 +915,52 @@ function publishNow() {
   btn.disabled = true;
   btn.innerHTML = '<span class="publish-icon">⏳</span> <span>Publishing...</span>';
 
-  setTimeout(() => showSuccess(checkedAccounts), 1800);
+  (async () => {
+  try {
+
+    const caption =
+      CAPTIONS_DB[state.selectedTone][state.selectedCaption].text +
+      "\n\n" +
+      [...state.selectedHashtags].join(" ");
+
+    const results = await publishToRealAccounts(
+      caption,
+      state.videoUrl
+    );
+
+    console.log(results);
+
+    const failed = results.filter(r => !r.success);
+
+    if (failed.length > 0) {
+
+      showToast(
+        `❌ ${failed[0].platform}: ${failed[0].error}`,
+        'error'
+      );
+
+      btn.disabled = false;
+
+      btn.innerHTML =
+        '<span class="publish-icon">🚀</span><span id="publishBtnText">Post to All Selected</span>';
+
+      return;
+    }
+
+    showSuccess(checkedAccounts);
+
+  } catch (err) {
+
+    console.error(err);
+
+    showToast('❌ Publishing failed', 'error');
+
+    btn.disabled = false;
+
+    btn.innerHTML =
+      '<span class="publish-icon">🚀</span><span id="publishBtnText">Post to All Selected</span>';
+  }
+})();
 }
 
 function showSuccess(accounts) {
